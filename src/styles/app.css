@@ -181,6 +181,10 @@
 .block:hover { background: #ffffff05; }
 .block .handle { opacity: 0; color: var(--text-4); cursor: grab; padding-top: 5px; transition: opacity 0.12s; user-select: none; }
 .block:hover .handle { opacity: 1; }
+.block .handle:active { cursor: grabbing; }
+.block.block-dragging { opacity: 0.4; }
+.block.block-droppable { transition: box-shadow 0.1s; }
+.block.block-drop-over { box-shadow: 0 2px 0 0 var(--accent); }
 .block-input {
   flex: 1; background: none; border: none; outline: none; resize: none;
   color: var(--text-1); font-size: 15.5px; line-height: 1.7; overflow: hidden;

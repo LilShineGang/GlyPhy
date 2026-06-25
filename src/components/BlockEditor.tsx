@@ -3,6 +3,7 @@ import clsx from "clsx";
 import type { Block, BlockType } from "@/lib/types";
 import { renderInline } from "@/lib/markdown";
 import { openExternal } from "@/lib/api";
+import { useDraggable, useDrop, useDnD } from "@/lib/dnd";
 import { I } from "./Icons";
 
 let counter = 0;
@@ -72,6 +73,18 @@ export default function BlockEditor({ blocks, onChange, onOpenLink }: Props) {
     onChange([...blocks.slice(0, idx + 1), nb, ...blocks.slice(idx + 1)]);
     setFocusedId(nb.id);
     setPendingFocus(nb.id);
+  };
+
+  // Reordena un bloque arrastrado (sourceId) respecto a otro (targetId).
+  const moveBlock = (sourceId: string, targetId: string, after: boolean) => {
+    if (sourceId === targetId) return;
+    const src = blocks.find((b) => b.id === sourceId);
+    if (!src) return;
+    const rest = blocks.filter((b) => b.id !== sourceId);
+    let idx = rest.findIndex((b) => b.id === targetId);
+    if (idx === -1) return;
+    if (after) idx += 1;
+    onChange([...rest.slice(0, idx), src, ...rest.slice(idx)]);
   };
 
   const removeBlock = (id: string) => {
@@ -164,54 +177,122 @@ export default function BlockEditor({ blocks, onChange, onOpenLink }: Props) {
 
   return (
     <div className="blocks">
-      {blocks.map((b, i) => {
-        const editing = focusedId === b.id;
-        const showToolbar = editing && sel?.id === b.id && sel.start !== sel.end;
-        return (
-          <div key={b.id} className={clsx("block", b.type, b.type === "todo" && b.checked && "done")}>
-            <span className="handle" title="Arrastrar / opciones">⋮⋮</span>
+      {blocks.map((b, i) => (
+        <BlockRow
+          key={b.id}
+          b={b}
+          i={i}
+          blocks={blocks}
+          editing={focusedId === b.id}
+          showToolbar={focusedId === b.id && sel?.id === b.id && sel.start !== sel.end}
+          refs={refs}
+          handlers={handlers}
+          update={update}
+          handleInput={handleInput}
+          onKeyDown={onKeyDown}
+          trackSelection={trackSelection}
+          applyWrap={applyWrap}
+          applyLink={applyLink}
+          moveBlock={moveBlock}
+          setFocusedId={setFocusedId}
+          setPendingFocus={setPendingFocus}
+          setSel={setSel}
+        />
+      ))}
+    </div>
+  );
+}
 
-            {b.type === "bullet" && <span className="bullet-mark">•</span>}
-            {b.type === "numbered" && <span className="num-mark">{numberOf(blocks, i)}.</span>}
-            {b.type === "todo" && (
-              <div className={clsx("todo-check", b.checked && "checked")} onClick={() => update(b.id, { checked: !b.checked })}>
-                {b.checked && <I.Check width={13} />}
-              </div>
-            )}
+interface RowProps {
+  b: Block;
+  i: number;
+  blocks: Block[];
+  editing: boolean;
+  showToolbar: boolean;
+  refs: React.MutableRefObject<Record<string, HTMLTextAreaElement | null>>;
+  handlers: { onWikiLink: (t: string) => void; onOpenUrl: (u: string) => void };
+  update: (id: string, patch: Partial<Block>) => void;
+  handleInput: (b: Block, value: string) => void;
+  onKeyDown: (e: React.KeyboardEvent, b: Block) => void;
+  trackSelection: (b: Block, el: HTMLTextAreaElement) => void;
+  applyWrap: (b: Block, before: string, after?: string) => void;
+  applyLink: (b: Block) => void;
+  moveBlock: (sourceId: string, targetId: string, after: boolean) => void;
+  setFocusedId: React.Dispatch<React.SetStateAction<string | null>>;
+  setPendingFocus: React.Dispatch<React.SetStateAction<string | null>>;
+  setSel: React.Dispatch<React.SetStateAction<{ id: string; start: number; end: number } | null>>;
+}
 
-            {b.type === "divider" ? (
-              <hr />
-            ) : editing ? (
-              <div style={{ position: "relative", flex: 1 }}>
-                {showToolbar && <FormatToolbar onFmt={(bef, aft) => applyWrap(b, bef, aft)} onLink={() => applyLink(b)} />}
-                <textarea
-                  ref={(el) => { refs.current[b.id] = el; autosize(el); }}
-                  className="block-input"
-                  rows={1}
-                  value={b.text}
-                  autoFocus
-                  placeholder={i === 0 ? "Escribe… usa **negrita**, *cursiva*, [texto](url), [[enlace]] o '# ', '- ', '[] '" : "Escribe…"}
-                  onChange={(e) => { handleInput(b, e.target.value); autosize(e.target); }}
-                  onKeyDown={(e) => onKeyDown(e, b)}
-                  onSelect={(e) => trackSelection(b, e.target as HTMLTextAreaElement)}
-                  onBlur={() => { setTimeout(() => { setFocusedId((id) => (id === b.id ? null : id)); setSel(null); }, 120); }}
-                />
-              </div>
-            ) : (
-              <div
-                className={clsx("block-rendered", !b.text && "empty")}
-                onMouseDown={(e) => { e.preventDefault(); setFocusedId(b.id); setPendingFocus(b.id); }}
-              >
-                {b.type === "code"
-                  ? (b.text || "​")
-                  : b.text
-                    ? renderInline(b.text, handlers)
-                    : <span className="rendered-placeholder">{i === 0 ? "Escribe algo…" : ""}</span>}
-              </div>
-            )}
-          </div>
-        );
-      })}
+// Una fila de bloque. Es su propio componente para poder usar los hooks de DnD
+// (useDrop/useDraggable) por bloque — NO se pueden llamar dentro de un .map.
+function BlockRow(p: RowProps) {
+  const { b, i, blocks, editing, showToolbar } = p;
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  // El bloque es zona de destino: al soltar otro bloque, lo reordena según la
+  // mitad superior/inferior sobre la que se suelte.
+  const { isOver, canDrop, ...dropAttrs } = useDrop(["block"], (drag) => {
+    const el = rowRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const y = useDnD.getState().y;
+    p.moveBlock(drag.id, b.id, y > rect.top + rect.height / 2);
+  });
+
+  // El tirador (⋮⋮) es la fuente de arrastre del bloque.
+  const handleDrag = useDraggable(() => ({
+    kind: "block",
+    id: b.id,
+    label: b.text.slice(0, 24) || "Bloque vacío",
+  }));
+  const dragging = useDnD((s) => s.payload?.kind === "block" && s.payload.id === b.id);
+
+  return (
+    <div
+      ref={rowRef}
+      className={clsx("block", b.type, b.type === "todo" && b.checked && "done", dragging && "block-dragging", canDrop && "block-droppable", isOver && "block-drop-over")}
+      {...dropAttrs}
+    >
+      <span className="handle" title="Arrastrar para reordenar" {...handleDrag}>⋮⋮</span>
+
+      {b.type === "bullet" && <span className="bullet-mark">•</span>}
+      {b.type === "numbered" && <span className="num-mark">{numberOf(blocks, i)}.</span>}
+      {b.type === "todo" && (
+        <div className={clsx("todo-check", b.checked && "checked")} onClick={() => p.update(b.id, { checked: !b.checked })}>
+          {b.checked && <I.Check width={13} />}
+        </div>
+      )}
+
+      {b.type === "divider" ? (
+        <hr />
+      ) : editing ? (
+        <div style={{ position: "relative", flex: 1 }}>
+          {showToolbar && <FormatToolbar onFmt={(bef, aft) => p.applyWrap(b, bef, aft)} onLink={() => p.applyLink(b)} />}
+          <textarea
+            ref={(el) => { p.refs.current[b.id] = el; autosize(el); }}
+            className="block-input"
+            rows={1}
+            value={b.text}
+            autoFocus
+            placeholder={i === 0 ? "Escribe… usa **negrita**, *cursiva*, [texto](url), [[enlace]] o '# ', '- ', '[] '" : "Escribe…"}
+            onChange={(e) => { p.handleInput(b, e.target.value); autosize(e.target); }}
+            onKeyDown={(e) => p.onKeyDown(e, b)}
+            onSelect={(e) => p.trackSelection(b, e.target as HTMLTextAreaElement)}
+            onBlur={() => { setTimeout(() => { p.setFocusedId((id) => (id === b.id ? null : id)); p.setSel(null); }, 120); }}
+          />
+        </div>
+      ) : (
+        <div
+          className={clsx("block-rendered", !b.text && "empty")}
+          onMouseDown={(e) => { e.preventDefault(); p.setFocusedId(b.id); p.setPendingFocus(b.id); }}
+        >
+          {b.type === "code"
+            ? (b.text || "​")
+            : b.text
+              ? renderInline(b.text, p.handlers)
+              : <span className="rendered-placeholder">{i === 0 ? "Escribe algo…" : ""}</span>}
+        </div>
+      )}
     </div>
   );
 }
