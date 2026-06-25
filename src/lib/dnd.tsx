@@ -67,7 +67,7 @@ export const useDnD = create<DnDState>((set, get) => ({
 }));
 
 // No iniciar arrastre si el gesto empieza sobre un control interactivo.
-const INTERACTIVE = "button, input, textarea, a, .todo-check, .tl-check, .handle";
+const INTERACTIVE = "button, input, textarea, a, .todo-check, .tl-check";
 
 /** Devuelve props para un elemento arrastrable. `payload` puede ser una función
  *  para leer datos frescos en el momento del arrastre. */
